@@ -500,106 +500,138 @@ include __DIR__ . '/includes/header.php';
     <h2>Items</h2>
   </div>
 
-  <div class="inventory-grid">
-    <?php foreach ($items as $item): ?>
-      <article class="inventory-item">
-        <header class="inventory-item__header">
-          <div>
-            <h3><?php echo sanitize((string)$item['name']); ?></h3>
-            <p class="muted">SKU: <?php echo !empty($item['sku']) ? sanitize((string)$item['sku']) : '<em>—</em>'; ?></p>
-          </div>
-          <div class="inventory-item__qty">
-            <span class="qty-label">Qty</span>
-            <span class="qty-value"><?php echo (int)$item['quantity']; ?></span>
-          </div>
-        </header>
-        <dl class="inventory-item__meta">
-          <div>
-            <dt>Sector</dt>
-            <dd>
+  <div class="inventory-table-wrapper">
+    <table class="inventory-table">
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th class="col-qty">Qty</th>
+          <th>Sector</th>
+          <th>Location</th>
+          <th class="col-actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($items as $item): ?>
+          <tr>
+            <td>
+              <div class="item-heading">
+                <strong><?php echo sanitize((string)$item['name']); ?></strong>
+                <span class="muted">SKU: <?php echo !empty($item['sku']) ? sanitize((string)$item['sku']) : '—'; ?></span>
+              </div>
+            </td>
+            <td class="qty-cell"><?php echo (int)$item['quantity']; ?></td>
+            <td>
               <?php
                 $sn = sector_name_by_id((array)$sectorOptions, $item['sector_id']);
                 echo $sn !== '' ? sanitize($sn) : '<span class="badge badge-muted">Unassigned</span>';
               ?>
-            </dd>
-          </div>
-          <div>
-            <dt>Location</dt>
-            <dd><?php echo !empty($item['location']) ? sanitize((string)$item['location']) : '<em class="muted">—</em>'; ?></dd>
-          </div>
-        </dl>
-
-        <?php if ($canManage && ($isRoot || (int)$item['sector_id'] === (int)$userSectorId || $isRoot)): ?>
-          <div class="inventory-item__actions">
-            <button class="btn small secondary" data-modal-open="modal-edit-<?php echo (int)$item['id']; ?>">Edit</button>
-            <button class="btn small" data-modal-open="modal-move-<?php echo (int)$item['id']; ?>">Move</button>
-          </div>
+            </td>
+            <td><?php echo !empty($item['location']) ? sanitize((string)$item['location']) : '<em class="muted">—</em>'; ?></td>
+            <td class="actions-cell">
+              <?php if ($canManage && ($isRoot || (int)$item['sector_id'] === (int)$userSectorId || $isRoot)): ?>
+                <div class="action-buttons">
+                  <button class="btn tiny secondary" data-modal-open="modal-edit-<?php echo (int)$item['id']; ?>">Edit</button>
+                  <button class="btn tiny" data-modal-open="modal-move-<?php echo (int)$item['id']; ?>">Move</button>
+                </div>
+              <?php else: ?>
+                <span class="muted small">—</span>
+              <?php endif; ?>
+            </td>
+          </tr>
+          <tr class="movement-row">
+            <td colspan="5">
+              <div class="movement-wrapper">
+                <div class="movement-header">
+                  <h4>Movements</h4>
+                </div>
+                <ul class="movement-list">
+                  <?php foreach ($movementsByItem[(int)$item['id']] ?? [] as $movement): ?>
+                    <?php
+                      $movementId = (int)$movement['id'];
+                      $direction  = $movement['direction'] === 'out' ? 'out' : 'in';
+                      $chipClass  = $direction === 'out' ? 'chip-out' : 'chip-in';
+                      $sectorFrom = $movement['source_sector_id'] !== null ? inventory_sector_name((array)$sectorOptions, $movement['source_sector_id']) : '';
+                      $sectorTo   = $movement['target_sector_id'] !== null ? inventory_sector_name((array)$sectorOptions, $movement['target_sector_id']) : '';
+                      $attachments = $movementFiles[$movementId] ?? [];
+                      $tokens = $movementTokens[$movementId] ?? [];
+                    ?>
+                    <li>
+                      <div class="movement-main">
+                        <span class="chip <?php echo $chipClass; ?>"><?php echo strtoupper($direction); ?></span>
+                        <strong><?php echo (int)$movement['amount']; ?></strong>
+                        <span class="muted small"><?php echo sanitize((string)$movement['ts']); ?></span>
+                      </div>
+                      <div class="movement-meta">
+                        <?php if (!empty($movement['reason'])): ?>
+                          <span class="tag">Reason: <?php echo sanitize((string)$movement['reason']); ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($movement['notes'])): ?>
+                          <span class="tag">Notes: <?php echo sanitize((string)$movement['notes']); ?></span>
+                        <?php endif; ?>
+                        <?php if ($sectorFrom !== '' || $sectorTo !== ''): ?>
+                          <span class="tag">Route: <?php echo $sectorFrom !== '' ? sanitize($sectorFrom) : '—'; ?> → <?php echo $sectorTo !== '' ? sanitize($sectorTo) : '—'; ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($movement['transfer_form_url'])): ?>
+                          <a class="tag tag-link" href="<?php echo sanitize((string)$movement['transfer_form_url']); ?>" target="_blank" rel="noopener">
+                            <span aria-hidden="true">📄</span> Transfer PDF
+                          </a>
+                        <?php endif; ?>
+                        <?php if ($tokens): ?>
+                          <?php $tokenRow = end($tokens); ?>
+                          <span class="tag">QR expires <?php echo sanitize((string)$tokenRow['expires_at']); ?></span>
+                        <?php endif; ?>
+                        <span class="tag status-<?php echo sanitize((string)$movement['transfer_status']); ?>">Status: <?php echo ucfirst((string)$movement['transfer_status']); ?></span>
+                      </div>
+                      <?php if ($attachments): ?>
+                        <div class="movement-files">
+                          <?php foreach ($attachments as $file): ?>
+                            <?php
+                              $displayLabel = (string)($file['label'] ?? '');
+                              if ($file['kind'] === 'signature') {
+                                  $meta = inventory_decode_signature_label($displayLabel);
+                                  if ($meta) {
+                                      $roleLabel = ($meta['role'] ?? '') === 'target' ? 'Receiving signature' : 'Source signature';
+                                      $parts = [$roleLabel];
+                                      if (!empty($meta['sector_name'])) {
+                                          $parts[] = (string)$meta['sector_name'];
+                                      }
+                                      if (!empty($meta['signer'])) {
+                                          $parts[] = (string)$meta['signer'];
+                                      }
+                                      $displayLabel = implode(' · ', $parts);
+                                  }
+                              }
+                              if ($displayLabel === '') {
+                                  $displayLabel = basename((string)($file['file_key'] ?? 'file'));
+                              }
+                            ?>
+                            <a class="file-pill" href="<?php echo sanitize((string)$file['file_url']); ?>" target="_blank" rel="noopener">
+                              📎 <?php echo sanitize($displayLabel); ?>
+                            </a>
+                          <?php endforeach; ?>
+                        </div>
+                      <?php endif; ?>
+                      <?php if ($canManage): ?>
+                        <button class="btn tiny" data-modal-open="modal-upload-<?php echo $movementId; ?>">Upload Paper Trail</button>
+                      <?php endif; ?>
+                    </li>
+                  <?php endforeach; ?>
+                  <?php if (empty($movementsByItem[(int)$item['id']])): ?>
+                    <li class="muted small">No movements yet.</li>
+                  <?php endif; ?>
+                </ul>
+              </div>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+        <?php if (empty($items)): ?>
+          <tr class="empty-row">
+            <td colspan="5">No items found for the selected filter.</td>
+          </tr>
         <?php endif; ?>
-
-        <div class="inventory-movements">
-          <h4>Movements</h4>
-          <ul>
-            <?php foreach ($movementsByItem[(int)$item['id']] ?? [] as $movement): ?>
-              <?php
-                $movementId = (int)$movement['id'];
-                $direction  = $movement['direction'] === 'out' ? 'out' : 'in';
-                $chipClass  = $direction === 'out' ? 'chip-out' : 'chip-in';
-                $sectorFrom = $movement['source_sector_id'] !== null ? inventory_sector_name((array)$sectorOptions, $movement['source_sector_id']) : '';
-                $sectorTo   = $movement['target_sector_id'] !== null ? inventory_sector_name((array)$sectorOptions, $movement['target_sector_id']) : '';
-                $attachments = $movementFiles[$movementId] ?? [];
-                $tokens = $movementTokens[$movementId] ?? [];
-              ?>
-              <li>
-                <div class="movement-main">
-                  <span class="chip <?php echo $chipClass; ?>"><?php echo strtoupper($direction); ?></span>
-                  <strong><?php echo (int)$movement['amount']; ?></strong>
-                  <span class="muted small">&middot; <?php echo sanitize((string)$movement['ts']); ?></span>
-                </div>
-                <div class="movement-meta">
-                  <?php if (!empty($movement['reason'])): ?>
-                    <span class="tag">Reason: <?php echo sanitize((string)$movement['reason']); ?></span>
-                  <?php endif; ?>
-                  <?php if (!empty($movement['notes'])): ?>
-                    <span class="tag">Notes: <?php echo sanitize((string)$movement['notes']); ?></span>
-                  <?php endif; ?>
-                  <?php if ($sectorFrom !== '' || $sectorTo !== ''): ?>
-                    <span class="tag">Route: <?php echo $sectorFrom !== '' ? sanitize($sectorFrom) : '—'; ?> → <?php echo $sectorTo !== '' ? sanitize($sectorTo) : '—'; ?></span>
-                  <?php endif; ?>
-                  <?php if (!empty($movement['transfer_form_url'])): ?>
-                    <a class="tag tag-link" href="<?php echo sanitize((string)$movement['transfer_form_url']); ?>" target="_blank" rel="noopener">
-                      📄 Transfer PDF
-                    </a>
-                  <?php endif; ?>
-                  <?php if ($tokens): ?>
-                    <?php $tokenRow = end($tokens); ?>
-                    <span class="tag">QR Token expires <?php echo sanitize((string)$tokenRow['expires_at']); ?></span>
-                  <?php endif; ?>
-                  <span class="tag status-<?php echo sanitize((string)$movement['transfer_status']); ?>">Status: <?php echo ucfirst((string)$movement['transfer_status']); ?></span>
-                </div>
-                <?php if ($attachments): ?>
-                  <div class="movement-files">
-                    <?php foreach ($attachments as $file): ?>
-                      <a class="file-pill" href="<?php echo sanitize((string)$file['file_url']); ?>" target="_blank" rel="noopener">
-                        📎 <?php echo sanitize((string)($file['label'] ?? basename((string)$file['file_key']))); ?>
-                      </a>
-                    <?php endforeach; ?>
-                  </div>
-                <?php endif; ?>
-                <?php if ($canManage): ?>
-                  <button class="btn tiny" data-modal-open="modal-upload-<?php echo $movementId; ?>">Upload Paper Trail</button>
-                <?php endif; ?>
-              </li>
-            <?php endforeach; ?>
-            <?php if (empty($movementsByItem[(int)$item['id']])): ?>
-              <li class="muted small">No movements yet.</li>
-            <?php endif; ?>
-          </ul>
-        </div>
-      </article>
-    <?php endforeach; ?>
-    <?php if (empty($items)): ?>
-      <div class="muted">No items found for the selected filter.</div>
-    <?php endif; ?>
+      </tbody>
+    </table>
   </div>
 </section>
 <?php if ($canManage): ?>
@@ -872,20 +904,23 @@ include __DIR__ . '/includes/header.php';
 <style>
 .card--inventory { margin-top: 1.5rem; }
 .actions-stack { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
-.inventory-grid { display:grid; gap:1rem; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); }
-.inventory-item { border:1px solid var(--line,#e5e7eb); border-radius:16px; padding:1rem; background:#fff; display:flex; flex-direction:column; gap:1rem; box-shadow:0 20px 40px -24px rgba(15,23,42,0.25); }
-.inventory-item__header { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
-.inventory-item__header h3 { margin:0; font-size:1.15rem; }
-.inventory-item__qty { text-align:right; }
-.qty-label { font-size:.65rem; text-transform:uppercase; letter-spacing:.1em; color:#64748b; display:block; }
-.qty-value { font-size:1.8rem; font-weight:700; color:#111827; }
-.inventory-item__meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.75rem; margin:0; }
-.inventory-item__meta dt { font-size:.7rem; text-transform:uppercase; color:#94a3b8; letter-spacing:.1em; margin-bottom:.25rem; }
-.inventory-item__meta dd { margin:0; font-size:.9rem; color:#1f2937; }
-.inventory-item__actions { display:flex; gap:.5rem; }
-.inventory-movements h4 { margin:0 0 .5rem; font-size:.95rem; text-transform:uppercase; letter-spacing:.08em; color:#0f172a; }
-.inventory-movements ul { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:.75rem; }
-.inventory-movements li { border:1px solid #e2e8f0; border-radius:12px; padding:.75rem; background:#f8fafc; display:flex; flex-direction:column; gap:.5rem; }
+.inventory-table-wrapper { overflow-x:auto; background:#fff; border-radius:16px; box-shadow:0 20px 40px -28px rgba(15,23,42,0.15); }
+.inventory-table { width:100%; border-collapse:collapse; min-width:720px; }
+.inventory-table th, .inventory-table td { padding:.85rem 1rem; border-bottom:1px solid #e2e8f0; text-align:left; vertical-align:top; }
+.inventory-table th { background:#f1f5f9; font-size:.7rem; text-transform:uppercase; letter-spacing:.1em; color:#64748b; }
+.inventory-table tbody tr:last-child td { border-bottom:none; }
+.col-qty { width:80px; text-align:center; }
+.qty-cell { font-size:1.15rem; font-weight:700; text-align:center; color:#111827; }
+.col-actions { width:150px; text-align:right; }
+.actions-cell { text-align:right; }
+.action-buttons { display:flex; gap:.4rem; justify-content:flex-end; }
+.item-heading { display:flex; flex-direction:column; gap:.25rem; }
+.item-heading strong { font-size:1.05rem; color:#0f172a; }
+.movement-row td { background:#f8fafc; padding:0 1rem 1rem; }
+.movement-wrapper { display:flex; flex-direction:column; gap:.75rem; padding-top:1rem; }
+.movement-header h4 { margin:0; font-size:.85rem; text-transform:uppercase; letter-spacing:.08em; color:#0f172a; }
+.movement-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.75rem; }
+.movement-list li { background:#fff; border-radius:12px; padding:.75rem; border:1px solid #dce4f4; display:flex; flex-direction:column; gap:.5rem; }
 .movement-main { display:flex; gap:.6rem; align-items:center; }
 .movement-meta { display:flex; flex-wrap:wrap; gap:.4rem; font-size:.75rem; color:#475569; }
 .movement-files { display:flex; flex-wrap:wrap; gap:.4rem; }
@@ -899,6 +934,8 @@ include __DIR__ . '/includes/header.php';
 .badge-muted { background:#e2e8f0; color:#475569; padding:.2rem .6rem; border-radius:999px; }
 .status-pending { background:#fef08a; color:#854d0e; }
 .status-signed { background:#bbf7d0; color:#166534; }
+.movement-wrapper .btn.tiny { align-self:flex-start; }
+.empty-row td { text-align:center; padding:1.5rem; color:#64748b; font-style:italic; }
 .modal { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,0.48); z-index:1000; padding:1.5rem; }
 .modal[hidden] { display:none; }
 .modal__dialog { background:#fff; border-radius:16px; max-width:520px; width:100%; box-shadow:0 30px 70px -40px rgba(15,23,42,0.7); overflow:hidden; display:flex; flex-direction:column; }
@@ -914,7 +951,6 @@ include __DIR__ . '/includes/header.php';
 .bulk-row { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); padding:1rem; border:1px dashed #cbd5f5; border-radius:12px; background:#f8fafc; }
 .checkbox { display:flex; gap:.5rem; align-items:center; }
 .filters--toolbar { margin-top:1rem; }
-.btn.tiny { align-self:flex-start; }
 @media (max-width: 640px) {
   .modal { padding:.5rem; }
   .modal__dialog { max-height:95vh; overflow:auto; }

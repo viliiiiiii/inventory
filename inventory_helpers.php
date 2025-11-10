@@ -322,6 +322,286 @@ function inventory_fetch_movement_files(PDO $pdo, array $movementIds): array
     return $grouped;
 }
 
+/**
+ * Attempt to decode a structured signature label payload.
+ *
+ * @return array|null
+ */
+function inventory_decode_signature_label(?string $label): ?array
+{
+    if (!is_string($label) || trim($label) === '') {
+        return null;
+    }
+
+    $decoded = json_decode($label, true);
+    if (is_array($decoded) && isset($decoded['role'])) {
+        return $decoded;
+    }
+
+    if (preg_match('/^(?:Digital signature|Uploaded copy) - (Source|Receiving) - (.+)$/', $label, $m)) {
+        return [
+            'role'        => strtolower($m[1]) === 'receiving' ? 'target' : 'source',
+            'sector_name' => '',
+            'signer'      => trim($m[2]),
+        ];
+    }
+
+    return null;
+}
+
+/**
+ * Fetch latest signature entries for a movement grouped by party role.
+ *
+ * @return array{source: array|null, target: array|null, extras: array<int,array>}
+ */
+function inventory_fetch_movement_signatures(PDO $pdo, int $movementId): array
+{
+    $stmt = $pdo->prepare('SELECT * FROM inventory_movement_files WHERE movement_id = :id AND kind = "signature" ORDER BY uploaded_at DESC, id DESC');
+    $stmt->execute([':id' => $movementId]);
+    $rows = $stmt->fetchAll();
+
+    $map = [
+        'source' => null,
+        'target' => null,
+        'extras' => [],
+    ];
+
+    foreach ($rows as $row) {
+        $meta = inventory_decode_signature_label($row['label'] ?? null);
+        if ($meta && isset($meta['role'])) {
+            $role = $meta['role'];
+            if ($role === 'receiving') {
+                $role = 'target';
+            }
+            if ($role === 'target' || $role === 'source') {
+                if (!isset($map[$role]) || !$map[$role]) {
+                    $row['meta'] = $meta;
+                    $map[$role] = $row;
+                    continue;
+                }
+            }
+        }
+        $map['extras'][] = $row;
+    }
+
+    return $map;
+}
+
+/**
+ * Download a stored S3/MinIO object body.
+ */
+function inventory_s3_fetch_object(string $key): string
+{
+    if (!class_exists(Aws\S3\S3Client::class)) {
+        throw new RuntimeException('S3 client is not available.');
+    }
+    $client = s3_client();
+    $result = $client->getObject([
+        'Bucket' => S3_BUCKET,
+        'Key'    => $key,
+    ]);
+    if (!isset($result['Body'])) {
+        throw new RuntimeException('Object body missing for ' . $key);
+    }
+
+    return (string)$result['Body'];
+}
+
+/**
+ * Regenerate a transfer PDF including captured signatures and mark the movement signed.
+ */
+function inventory_generate_signed_transfer_pdf(PDO $pdo, int $movementId, array $signatureMap): ?array
+{
+    if (!class_exists(Dompdf::class)) {
+        throw new RuntimeException('Dompdf library not available.');
+    }
+
+    if (empty($signatureMap['source']) || empty($signatureMap['target'])) {
+        return null;
+    }
+
+    $stmt = $pdo->prepare('SELECT * FROM inventory_movements WHERE id = :id');
+    $stmt->execute([':id' => $movementId]);
+    $movement = $stmt->fetch();
+    if (!$movement) {
+        throw new RuntimeException('Movement not found.');
+    }
+
+    $groupKey = $movement['transfer_form_key'] ?? null;
+
+    if ($groupKey) {
+        $groupStmt = $pdo->prepare('SELECT m.*, i.name AS item_name, i.sku AS item_sku FROM inventory_movements m JOIN inventory_items i ON i.id = m.item_id WHERE m.transfer_form_key = :key ORDER BY m.ts');
+        $groupStmt->execute([':key' => $groupKey]);
+        $groupMovements = $groupStmt->fetchAll();
+    } else {
+        $groupStmt = $pdo->prepare('SELECT m.*, i.name AS item_name, i.sku AS item_sku FROM inventory_movements m JOIN inventory_items i ON i.id = m.item_id WHERE m.id = :id');
+        $groupStmt->execute([':id' => $movementId]);
+        $groupMovements = $groupStmt->fetchAll();
+    }
+
+    if (!$groupMovements) {
+        throw new RuntimeException('Movements missing for PDF generation.');
+    }
+
+    $sectors = [];
+    try {
+        $corePdo = get_pdo('core');
+        $sectors = (array)$corePdo->query('SELECT id,name FROM sectors')->fetchAll();
+    } catch (Throwable $e) {
+    }
+
+    $lineItems = [];
+    foreach ($groupMovements as $row) {
+        $lineItems[] = [
+            'name'      => $row['item_name'] ?? '',
+            'sku'       => $row['item_sku'] ?? '',
+            'amount'    => $row['amount'],
+            'direction' => $row['direction'],
+            'reason'    => $row['reason'] ?? ($row['notes'] ?? ''),
+        ];
+    }
+
+    $primary = $groupMovements[0];
+
+    $sourceSig = $signatureMap['source'];
+    $targetSig = $signatureMap['target'];
+    $sourceMeta = $sourceSig['meta'] ?? inventory_decode_signature_label($sourceSig['label'] ?? null);
+    $targetMeta = $targetSig['meta'] ?? inventory_decode_signature_label($targetSig['label'] ?? null);
+
+    $sourceImage = inventory_s3_fetch_object($sourceSig['file_key']);
+    $targetImage = inventory_s3_fetch_object($targetSig['file_key']);
+
+    $sourceImgData = 'data:' . (($sourceSig['mime'] ?? 'image/png') ?: 'image/png') . ';base64,' . base64_encode($sourceImage);
+    $targetImgData = 'data:' . (($targetSig['mime'] ?? 'image/png') ?: 'image/png') . ';base64,' . base64_encode($targetImage);
+
+    $sectorsAssoc = [];
+    foreach ($sectors as $sectorRow) {
+        $sectorsAssoc[(int)$sectorRow['id']] = (string)$sectorRow['name'];
+    }
+
+    $sourceSectorName = '';
+    $targetSectorName = '';
+    if (!empty($primary['source_sector_id']) && isset($sectorsAssoc[(int)$primary['source_sector_id']])) {
+        $sourceSectorName = $sectorsAssoc[(int)$primary['source_sector_id']];
+    }
+    if (!empty($primary['target_sector_id']) && isset($sectorsAssoc[(int)$primary['target_sector_id']])) {
+        $targetSectorName = $sectorsAssoc[(int)$primary['target_sector_id']];
+    }
+
+    if ($sourceMeta && !empty($sourceMeta['sector_name'])) {
+        $sourceSectorName = (string)$sourceMeta['sector_name'];
+    }
+    if ($targetMeta && !empty($targetMeta['sector_name'])) {
+        $targetSectorName = (string)$targetMeta['sector_name'];
+    }
+
+    $sourceSigner = $sourceMeta['signer'] ?? '';
+    $targetSigner = $targetMeta['signer'] ?? '';
+
+    $html = '<html><head><meta charset="utf-8"><style>' .
+        'body{font-family:"DejaVu Sans",sans-serif;color:#1f2937;margin:32px;font-size:12px;}' .
+        '.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;}' .
+        '.title{font-size:22px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#111827;}' .
+        '.meta{font-size:12px;line-height:1.5;color:#374151;}' .
+        'table{width:100%;border-collapse:collapse;margin-top:16px;}' .
+        'th,td{padding:10px;border-bottom:1px solid #e5e7eb;text-align:left;}' .
+        'th{background:#111827;color:#f9fafb;font-size:12px;letter-spacing:.05em;text-transform:uppercase;}' .
+        '.sig-row{display:flex;gap:32px;margin-top:36px;}' .
+        '.sig-box{flex:1;border-top:2px solid #1f2937;padding-top:8px;min-height:120px;display:flex;flex-direction:column;gap:10px;}' .
+        '.sig-label{font-weight:600;text-transform:uppercase;font-size:11px;color:#1f2937;letter-spacing:.08em;}' .
+        '.sig-img{max-width:100%;height:80px;object-fit:contain;}' .
+        '.sig-name{font-size:11px;color:#4b5563;}' .
+        '.notes{margin-top:24px;font-size:12px;color:#4b5563;line-height:1.6;background:#f8fafc;padding:14px;border-radius:12px;border:1px solid #e2e8f0;}' .
+        '</style></head><body>';
+
+    $html .= '<div class="header">'
+        . '<div>'
+        . '<div class="title">Inventory Transfer Form</div>'
+        . '<div class="meta">Transfer ID <strong>#' . (int)$primary['id'] . '</strong><br>'
+        . 'Signed on ' . htmlspecialchars(date('Y-m-d H:i'), ENT_QUOTES, 'UTF-8') . '</div>'
+        . '</div>'
+        . '</div>';
+
+    if ($sourceSectorName !== '' || $targetSectorName !== '') {
+        $html .= '<div class="meta">';
+        if ($sourceSectorName !== '') {
+            $html .= '<div>From <strong>' . htmlspecialchars($sourceSectorName, ENT_QUOTES, 'UTF-8') . '</strong></div>';
+        }
+        if ($targetSectorName !== '') {
+            $html .= '<div>To <strong>' . htmlspecialchars($targetSectorName, ENT_QUOTES, 'UTF-8') . '</strong></div>';
+        }
+        $html .= '</div>';
+    }
+
+    $html .= '<table><thead><tr>'
+        . '<th style="width:40%;">Item</th>'
+        . '<th>SKU</th>'
+        . '<th>Quantity</th>'
+        . '<th>Direction</th>'
+        . '<th>Notes</th>'
+        . '</tr></thead><tbody>';
+
+    foreach ($lineItems as $item) {
+        $html .= '<tr>'
+            . '<td>' . htmlspecialchars((string)$item['name'], ENT_QUOTES, 'UTF-8') . '</td>'
+            . '<td>' . htmlspecialchars((string)$item['sku'], ENT_QUOTES, 'UTF-8') . '</td>'
+            . '<td>' . (int)$item['amount'] . '</td>'
+            . '<td>' . htmlspecialchars(strtoupper((string)$item['direction']), ENT_QUOTES, 'UTF-8') . '</td>'
+            . '<td>' . htmlspecialchars((string)$item['reason'], ENT_QUOTES, 'UTF-8') . '</td>'
+            . '</tr>';
+    }
+    $html .= '</tbody></table>';
+
+    $html .= '<div class="sig-row">';
+    $html .= '<div class="sig-box">'
+        . '<div class="sig-label">Source Signature' . ($sourceSectorName !== '' ? ' — ' . htmlspecialchars($sourceSectorName, ENT_QUOTES, 'UTF-8') : '') . '</div>'
+        . '<img class="sig-img" src="' . $sourceImgData . '" alt="Source signature">';
+    if ($sourceSigner !== '') {
+        $html .= '<div class="sig-name">Signed by ' . htmlspecialchars($sourceSigner, ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    $html .= '</div>';
+
+    $html .= '<div class="sig-box">'
+        . '<div class="sig-label">Receiving Signature' . ($targetSectorName !== '' ? ' — ' . htmlspecialchars($targetSectorName, ENT_QUOTES, 'UTF-8') : '') . '</div>'
+        . '<img class="sig-img" src="' . $targetImgData . '" alt="Receiving signature">';
+    if ($targetSigner !== '') {
+        $html .= '<div class="sig-name">Signed by ' . htmlspecialchars($targetSigner, ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    $html .= '</div>';
+    $html .= '</div>';
+
+    $html .= '<div class="notes">Digitally signed via Punchlist inventory workflow. Both parties acknowledge the transfer of the listed items.</div>';
+
+    $html .= '</body></html>';
+
+    $options = new Options();
+    $options->set('isRemoteEnabled', true);
+    $options->set('defaultFont', 'DejaVu Sans');
+    $dompdf = new Dompdf($options);
+    $dompdf->loadHtml($html);
+    $dompdf->setPaper('A4', 'portrait');
+    $dompdf->render();
+    $pdf = $dompdf->output();
+
+    $upload = inventory_s3_upload($pdf, 'application/pdf', 'transfer-signed-' . (int)$primary['id'] . '.pdf', 'inventory/signed');
+
+    $ids = array_map(static fn($row) => (int)$row['id'], $groupMovements);
+    if ($ids) {
+        $idPlaceholders = [];
+        $params = [':key' => $upload['key'], ':url' => $upload['url']];
+        foreach ($ids as $index => $id) {
+            $param = ':id' . $index;
+            $idPlaceholders[] = $param;
+            $params[$param] = $id;
+        }
+        $sql = 'UPDATE inventory_movements SET transfer_form_key = :key, transfer_form_url = :url, transfer_status = \'signed\' WHERE id IN (' . implode(',', $idPlaceholders) . ')';
+        $stmtUpdate = $pdo->prepare($sql);
+        $stmtUpdate->execute($params);
+    }
+
+    return $upload;
+}
+
 function inventory_fetch_public_tokens(PDO $pdo, array $movementIds): array
 {
     if (!$movementIds) {
