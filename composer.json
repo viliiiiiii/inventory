@@ -1,0 +1,16 @@
+{
+    "name": "punchlist/app",
+    "description": "Simple PHP punch list manager",
+    "type": "project",
+    "require": {
+        "php": ">=8.2",
+        "aws/aws-sdk-php": "^3.298",
+        "dompdf/dompdf": "^2.0",
+        "phpoffice/phpspreadsheet": "^5.1"
+    },
+    "autoload": {
+        "files": [
+            "helpers.php"
+        ]
+    }
+}

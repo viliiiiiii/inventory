@@ -1,0 +1,368 @@
+
+/* =========================================================
+   Admin UI Styles (users.php, sectors.php, activity.php)
+   Scope: loaded ONLY on admin pages, after app.css
+   Author: ChatGPT
+   ========================================================= */
+
+/* -------- Theme tokens (override a few from app.css) -------- */
+:root {
+  --admin-accent: #0ea5e9;       /* cyan-ish accent used for admin elements */
+  --admin-accent-600: #0284c7;
+  --admin-accent-700: #0369a1;
+
+  --admin-bg: #f7fafc;
+  --admin-card: #ffffff;
+  --admin-border: #e5e7eb;
+  --admin-text: #111827;
+  --admin-muted: #6b7280;
+
+  --admin-shadow-xs: 0 1px 2px rgba(17, 24, 39, 0.06);
+  --admin-shadow-sm: 0 6px 18px rgba(17, 24, 39, 0.06);
+  --admin-shadow-md: 0 18px 36px rgba(17, 24, 39, 0.08);
+
+  --admin-radius: 14px;
+  --admin-gap-1: .25rem;
+  --admin-gap-2: .5rem;
+  --admin-gap-3: .75rem;
+  --admin-gap-4: 1rem;
+  --admin-gap-5: 1.25rem;
+}
+
+/* Ensure body looks consistent on admin pages */
+body {
+  background: var(--admin-bg);
+  color: var(--admin-text);
+}
+
+/* -------- Cards (slightly tighter & elevated) -------- */
+.card {
+  background: var(--admin-card);
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-radius);
+  box-shadow: var(--admin-shadow-sm);
+}
+
+.card:hover {
+  box-shadow: var(--admin-shadow-md);
+  border-color: rgba(2, 132, 199, .18);
+}
+
+.card .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--admin-gap-3);
+  margin-bottom: var(--admin-gap-4);
+}
+
+.card .card-header h1,
+.card .card-header h2 {
+  margin: 0;
+  font-weight: 800;
+  letter-spacing: .2px;
+}
+
+/* -------- Buttons (refinements + ghost variant) -------- */
+.btn {
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, var(--admin-accent), var(--admin-accent-600));
+  border-color: var(--admin-accent-600);
+}
+
+.btn.primary:hover {
+  filter: brightness(.98);
+  transform: translateY(-1px);
+}
+
+.btn.secondary {
+  background: #f8fafc;
+  color: var(--admin-muted);
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--admin-accent-700);
+}
+
+.btn.small {
+  padding: .35rem .6rem;
+  font-size: .9rem;
+}
+
+.btn.link {
+  background: transparent;
+  border: 0;
+  color: var(--admin-accent-700);
+  padding: 0;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn.link:hover {
+  text-decoration: underline;
+}
+
+/* -------- Filters toolbar (grid + right-aligned actions) -------- */
+.grid.four,
+.grid.three {
+  gap: var(--admin-gap-4);
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--admin-gap-2);
+}
+
+@media (min-width: 900px) {
+  .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .filter-actions { justify-content: flex-end; }
+}
+
+/* -------- Inline forms (used under <details>) -------- */
+.form-inline {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--admin-gap-3);
+  align-items: end;
+  padding: .75rem;
+  border: 1px dashed var(--admin-border);
+  border-radius: 10px;
+  background: #fafcff;
+  margin: .75rem 0;
+}
+
+.form-inline label { margin: 0; }
+.form-inline .btn { justify-self: start; }
+
+@media (max-width: 900px) {
+  .form-inline {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -------- Details / summary blocks -------- */
+details {
+  border: 1px solid var(--admin-border);
+  border-radius: 10px;
+  padding: .5rem .75rem;
+  background: #ffffff;
+  box-shadow: var(--admin-shadow-xs);
+}
+
+summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 800;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+
+summary::marker,
+summary::-webkit-details-marker { display: none; }
+
+summary::before {
+  content: "";
+  width: .6rem;
+  height: .6rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg) translateY(-1px);
+  transition: transform 160ms ease;
+}
+
+details[open] summary::before {
+  transform: rotate(45deg) translateY(-1px);
+}
+
+/* -------- Admin tables (sticky header + compact cells) -------- */
+.table {
+  border: 1px solid var(--admin-border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--admin-shadow-xs);
+  background: #fff;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, #f8fbff, #f4f7fb);
+  font-size: .88rem;
+  text-transform: uppercase;
+  letter-spacing: .02em;
+  color: #475569;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.table tbody tr:hover {
+  background: #f9fbff;
+}
+
+.table td, .table th {
+  padding: .75rem .9rem;
+}
+
+/* Compact helper for admin-heavy lists */
+.table-compact td, .table-compact th {
+  padding: .55rem .7rem;
+  font-size: .95rem;
+}
+
+/* Zebra (optional) */
+.table.zebra tbody tr:nth-child(even) td {
+  background: #fbfdff;
+}
+
+/* -------- Badges for roles, statuses, sectors -------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .28rem .6rem;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(17,24,39,.06);
+}
+
+.role-badge.viewer { background: #eef2ff; color: #3730a3; }
+.role-badge.admin  { background: #ecfeff; color: #155e75; }
+.role-badge.root   { background: #fef3c7; color: #92400e; }
+
+.status { font-weight: 800; padding: .28rem .6rem; border-radius: 999px; font-size: .74rem; }
+.status-success { background: #ecfdf5; color: #065f46; }
+.status-error   { background: #fff1f2; color: #7a1220; }
+.status-warn    { background: #fff9eb; color: #7a4d00; }
+
+.sector-badge {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid rgba(29,78,216,.15);
+}
+
+/* -------- Chips used in meta, actions, small info -------- */
+.chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.chip {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .28rem .55rem; border-radius: 999px;
+  background: #f4f6fb; color: #334155; font-size: .78rem; font-weight: 700;
+  border: 1px solid #e5e7eb;
+}
+
+/* -------- Pagination -------- */
+.pagination {
+  display: flex;
+  gap: .35rem;
+  justify-content: center;
+  padding-top: .8rem;
+}
+
+.page-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 36px; height: 36px; padding: 0 .6rem;
+  border: 1px solid var(--admin-border);
+  border-radius: 10px;
+  color: #334155;
+  background: #fff;
+  font-weight: 700;
+  box-shadow: var(--admin-shadow-xs);
+}
+
+.page-link:hover {
+  border-color: var(--admin-accent-600);
+  color: var(--admin-accent-700);
+}
+
+.page-link.active {
+  background: var(--admin-accent);
+  border-color: var(--admin-accent-600);
+  color: #fff;
+}
+
+/* -------- Forms: labels, inputs, selects (admin tweaks) -------- */
+label { font-weight: 700; color: #475569; }
+input, select, textarea {
+  border: 1px solid var(--admin-border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--admin-accent-600);
+  box-shadow: 0 6px 20px rgba(2,132,199,.08);
+}
+
+.error { color: #b91c1c; font-size: .85rem; margin-top: .25rem; }
+
+/* -------- Flash messages (subtle refinements) -------- */
+.flash { border-radius: 12px; font-weight: 700; }
+.flash-success { background: #ecfdf5; border: 1px solid #c6f7de; color: #065f46; }
+.flash-error   { background: #fff1f2; border: 1px solid #f9c7c9; color: #7a1220; }
+.flash-warning { background: #fff9eb; border: 1px solid #fde9a8; color: #7a4d00; }
+
+/* -------- Activity meta renderer -------- */
+.meta-json {
+  display: block;
+  max-width: 640px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background: #0b1221;
+  color: #e5e7eb;
+  padding: .6rem .75rem;
+  border-radius: 10px;
+  border: 1px solid #0f172a;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
+}
+
+/* -------- Small utilities -------- */
+.right { justify-content: flex-end; }
+.text-right { text-align: right; }
+.text-muted { color: var(--admin-muted); }
+.nowrap { white-space: nowrap; }
+.w-100 { width: 100%; }
+.mt-2 { margin-top: .5rem; }
+.mt-3 { margin-top: .75rem; }
+.mt-4 { margin-top: 1rem; }
+.mb-2 { margin-bottom: .5rem; }
+.mb-3 { margin-bottom: .75rem; }
+.mb-4 { margin-bottom: 1rem; }
+
+/* -------- Responsive table-to-cards (phone) -------- */
+@media (max-width: 640px) {
+  .table thead { display: none !important; }
+  .table tbody { display: grid; gap: .6rem; }
+  .table tr {
+    display: grid;
+    gap: .45rem;
+    padding: .85rem;
+    border: 1px solid var(--admin-border);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .table td {
+    display: grid;
+    grid-template-columns: 44% 1fr;
+    gap: .5rem;
+    border: 0;
+    padding: .2rem 0;
+  }
+  .table td::before {
+    content: attr(data-label);
+    color: var(--admin-muted);
+    font-weight: 800;
+    font-size: .9rem;
+  }
+  .form-inline { grid-template-columns: 1fr; }
+}

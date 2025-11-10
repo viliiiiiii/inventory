@@ -1,0 +1,626 @@
+<?php
+require_once __DIR__ . '/config.php';
+
+date_default_timezone_set(APP_TIMEZONE);
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_name(SESSION_NAME);
+    session_start();
+}
+
+// Autoload composer dependencies if available.
+$autoloadPath = __DIR__ . '/vendor/autoload.php';
+if (file_exists($autoloadPath)) {
+    require_once $autoloadPath;
+}
+
+function get_pdo(): PDO
+{
+    static $pdo;
+    if ($pdo === null) {
+        $dsn = sprintf('mysql:host=%s;dbname=%s;charset=%s', DB_HOST, DB_NAME, DB_CHARSET);
+        $options = [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ];
+        $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+    }
+    return $pdo;
+}
+
+function csrf_token(): string
+{
+    if (empty($_SESSION[CSRF_TOKEN_NAME])) {
+        $_SESSION[CSRF_TOKEN_NAME] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION[CSRF_TOKEN_NAME];
+}
+
+function verify_csrf_token(?string $token): bool
+{
+    return isset($_SESSION[CSRF_TOKEN_NAME]) && hash_equals($_SESSION[CSRF_TOKEN_NAME], (string)$token);
+}
+
+function redirect_with_message(string $location, string $message, string $type = 'success'): void
+{
+    $_SESSION['flash'] = ['message' => $message, 'type' => $type];
+    header('Location: ' . $location);
+    exit;
+}
+
+function flash_message(): void
+{
+    if (!empty($_SESSION['flash'])) {
+        $flash = $_SESSION['flash'];
+        unset($_SESSION['flash']);
+        $type = htmlspecialchars($flash['type']);
+        $message = htmlspecialchars($flash['message']);
+        echo "<div class=\"flash flash-$type\">$message</div>";
+    }
+}
+
+function current_user(): ?array
+{
+    return $_SESSION['user'] ?? null;
+}
+
+function require_login(): void
+{
+    if (!current_user()) {
+        header('Location: login.php');
+        exit;
+    }
+}
+
+function is_post(): bool
+{
+    return $_SERVER['REQUEST_METHOD'] === 'POST';
+}
+
+function sanitize(string $value): string
+{
+    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function get_priorities(): array
+{
+    return ['', 'low', 'low/mid', 'mid', 'mid/high', 'high'];
+}
+
+function get_statuses(): array
+{
+    return ['open', 'in_progress', 'done'];
+}
+
+function priority_label(string $priority): string
+{
+    $map = [
+        '' => 'No priority',
+        'low' => 'Low',
+        'low/mid' => 'Low/Mid',
+        'mid' => 'Mid',
+        'mid/high' => 'Mid/High',
+        'high' => 'High',
+    ];
+    return $map[$priority] ?? $priority;
+}
+
+function priority_class(string $priority): string
+{
+    return match ($priority) {
+        'low' => 'priority-low',
+        'low/mid' => 'priority-lowmid',
+        'mid' => 'priority-mid',
+        'mid/high' => 'priority-midhigh',
+        'high' => 'priority-high',
+        default => 'priority-none',
+    };
+}
+
+function status_label(string $status): string
+{
+    return match ($status) {
+        'open' => 'Open',
+        'in_progress' => 'In Progress',
+        'done' => 'Done',
+        default => ucfirst($status),
+    };
+}
+
+function status_class(string $status): string
+{
+    return match ($status) {
+        'open' => 'status-open',
+        'in_progress' => 'status-inprogress',
+        'done' => 'status-done',
+        default => 'status-open',
+    };
+}
+
+function fetch_buildings(): array
+{
+    $stmt = get_pdo()->query('SELECT id, name FROM buildings ORDER BY name');
+    return $stmt->fetchAll();
+}
+
+function fetch_rooms_by_building(?int $buildingId): array
+{
+    if (!$buildingId) {
+        return [];
+    }
+    $stmt = get_pdo()->prepare('SELECT id, room_number, label FROM rooms WHERE building_id = ? ORDER BY room_number');
+    $stmt->execute([$buildingId]);
+    return $stmt->fetchAll();
+}
+
+function fetch_task_photos(int $taskId): array
+{
+    $stmt = get_pdo()->prepare('SELECT * FROM task_photos WHERE task_id = ? ORDER BY position');
+    $stmt->execute([$taskId]);
+    $photos = $stmt->fetchAll();
+    $indexed = [];
+    foreach ($photos as $photo) {
+        $indexed[(int)$photo['position']] = $photo;
+    }
+    return $indexed;
+}
+
+function s3_client(): Aws\S3\S3Client
+{
+    static $client;
+    if ($client === null) {
+        $config = [
+            'version' => 'latest',
+            'region' => S3_REGION,
+            'credentials' => [
+                'key' => S3_KEY,
+                'secret' => S3_SECRET,
+            ],
+            'endpoint' => S3_ENDPOINT,
+            'use_path_style_endpoint' => S3_USE_PATH_STYLE,
+        ];
+        $client = new Aws\S3\S3Client($config);
+    }
+    return $client;
+}
+
+function s3_object_url(string $key): string
+{
+    if (S3_URL_BASE !== '') {
+        return rtrim(S3_URL_BASE, '/') . '/' . ltrim($key, '/');
+    }
+    $endpoint = rtrim(S3_ENDPOINT, '/');
+    if (S3_USE_PATH_STYLE) {
+        return $endpoint . '/' . rawurlencode(S3_BUCKET) . '/' . implode('/', array_map('rawurlencode', explode('/', $key)));
+    }
+    // virtual hosted style
+    $endpointParts = parse_url($endpoint);
+    $host = $endpointParts['scheme'] . '://' . S3_BUCKET . '.' . $endpointParts['host'];
+    $path = $endpointParts['path'] ?? '';
+    return rtrim($host . $path, '/') . '/' . ltrim($key, '/');
+}
+
+function build_task_filter_query(array $filters, array &$params): string
+{
+    $conditions = [];
+    if (!empty($filters['search'])) {
+        $conditions[] = '(t.title LIKE :search OR t.description LIKE :search)';
+        $params[':search'] = '%' . $filters['search'] . '%';
+    }
+    if (!empty($filters['building_id'])) {
+        $conditions[] = 't.building_id = :building_id';
+        $params[':building_id'] = (int)$filters['building_id'];
+    }
+    if (!empty($filters['room_id'])) {
+        $conditions[] = 't.room_id = :room_id';
+        $params[':room_id'] = (int)$filters['room_id'];
+    }
+    if (!empty($filters['priority']) && is_array($filters['priority'])) {
+        $placeholders = [];
+        foreach ($filters['priority'] as $idx => $priority) {
+            $ph = ':priority' . $idx;
+            $placeholders[] = $ph;
+            $params[$ph] = $priority;
+        }
+        if ($placeholders) {
+            $conditions[] = 't.priority IN (' . implode(',', $placeholders) . ')';
+        }
+    }
+    if (!empty($filters['status'])) {
+        $conditions[] = 't.status = :status';
+        $params[':status'] = $filters['status'];
+    }
+    if (!empty($filters['assigned_to'])) {
+        $conditions[] = 't.assigned_to LIKE :assigned_to';
+        $params[':assigned_to'] = '%' . $filters['assigned_to'] . '%';
+    }
+    if (!empty($filters['created_from'])) {
+        $conditions[] = 'DATE(t.created_at) >= :created_from';
+        $params[':created_from'] = $filters['created_from'];
+    }
+    if (!empty($filters['created_to'])) {
+        $conditions[] = 'DATE(t.created_at) <= :created_to';
+        $params[':created_to'] = $filters['created_to'];
+    }
+    if (!empty($filters['due_from'])) {
+        $conditions[] = 't.due_date >= :due_from';
+        $params[':due_from'] = $filters['due_from'];
+    }
+    if (!empty($filters['due_to'])) {
+        $conditions[] = 't.due_date <= :due_to';
+        $params[':due_to'] = $filters['due_to'];
+    }
+    if (isset($filters['has_photos']) && $filters['has_photos'] !== '') {
+        if ($filters['has_photos'] === '1') {
+            $conditions[] = 'EXISTS (SELECT 1 FROM task_photos tp WHERE tp.task_id = t.id)';
+        } elseif ($filters['has_photos'] === '0') {
+            $conditions[] = 'NOT EXISTS (SELECT 1 FROM task_photos tp WHERE tp.task_id = t.id)';
+        }
+    }
+    return $conditions ? 'WHERE ' . implode(' AND ', $conditions) : '';
+}
+
+function fetch_tasks(array $filters, string $sort, string $direction, int $limit, int $offset, int &$total): array
+{
+    $params = [];
+    $where = build_task_filter_query($filters, $params);
+    $sortColumns = [
+        'created_at' => 't.created_at',
+        'priority' => 't.priority',
+        'due_date' => 't.due_date',
+        'room' => 'r.room_number',
+    ];
+    $sortColumn = $sortColumns[$sort] ?? 't.created_at';
+    $direction = strtoupper($direction) === 'ASC' ? 'ASC' : 'DESC';
+
+    $pdo = get_pdo();
+    $countSql = "SELECT COUNT(*) FROM tasks t $where";
+    $stmt = $pdo->prepare($countSql);
+    $stmt->execute($params);
+    $total = (int)$stmt->fetchColumn();
+
+    $sql = "SELECT t.*, b.name AS building_name, r.room_number, r.label AS room_label,
+            (SELECT COUNT(*) FROM task_photos tp WHERE tp.task_id = t.id) AS photo_count
+            FROM tasks t
+            JOIN buildings b ON b.id = t.building_id
+            JOIN rooms r ON r.id = t.room_id
+            $where
+            ORDER BY $sortColumn $direction
+            LIMIT :limit OFFSET :offset";
+
+    $stmt = $pdo->prepare($sql);
+    foreach ($params as $key => $value) {
+        $stmt->bindValue($key, $value);
+    }
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->execute();
+
+    return $stmt->fetchAll();
+}
+
+function fetch_task(int $taskId): ?array
+{
+    $sql = "SELECT t.*, b.name AS building_name, r.room_number, r.label AS room_label
+            FROM tasks t
+            JOIN buildings b ON b.id = t.building_id
+            JOIN rooms r ON r.id = t.room_id
+            WHERE t.id = ?";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute([$taskId]);
+    $task = $stmt->fetch();
+    return $task ?: null;
+}
+
+function insert_task(array $data): int
+{
+    $sql = "INSERT INTO tasks (building_id, room_id, title, description, priority, assigned_to, status, due_date, created_by)
+            VALUES (:building_id, :room_id, :title, :description, :priority, :assigned_to, :status, :due_date, :created_by)";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute([
+        ':building_id' => $data['building_id'],
+        ':room_id' => $data['room_id'],
+        ':title' => $data['title'],
+        ':description' => $data['description'] ?? null,
+        ':priority' => $data['priority'] ?? '',
+        ':assigned_to' => $data['assigned_to'] ?? null,
+        ':status' => $data['status'] ?? 'open',
+        ':due_date' => $data['due_date'] ?? null,
+        ':created_by' => $data['created_by'] ?? null,
+    ]);
+    return (int)get_pdo()->lastInsertId();
+}
+
+function update_task(int $taskId, array $data): void
+{
+    $sql = "UPDATE tasks SET building_id = :building_id, room_id = :room_id, title = :title,
+            description = :description, priority = :priority, assigned_to = :assigned_to,
+            status = :status, due_date = :due_date WHERE id = :id";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute([
+        ':building_id' => $data['building_id'],
+        ':room_id' => $data['room_id'],
+        ':title' => $data['title'],
+        ':description' => $data['description'] ?? null,
+        ':priority' => $data['priority'] ?? '',
+        ':assigned_to' => $data['assigned_to'] ?? null,
+        ':status' => $data['status'] ?? 'open',
+        ':due_date' => $data['due_date'] ?? null,
+        ':id' => $taskId,
+    ]);
+}
+
+function delete_task(int $taskId): void
+{
+    $photos = fetch_task_photos($taskId);
+    foreach ($photos as $photo) {
+        try {
+            s3_client()->deleteObject([
+                'Bucket' => S3_BUCKET,
+                'Key' => $photo['s3_key'],
+            ]);
+        } catch (Throwable $e) {
+            // log or ignore; we continue deleting DB rows
+        }
+    }
+    $stmt = get_pdo()->prepare('DELETE FROM tasks WHERE id = ?');
+    $stmt->execute([$taskId]);
+}
+
+function upsert_photo(int $taskId, int $position, string $key, string $url): void
+{
+    $sql = "INSERT INTO task_photos (task_id, position, s3_key, url)
+            VALUES (:task_id, :position, :s3_key, :url)
+            ON DUPLICATE KEY UPDATE s3_key = VALUES(s3_key), url = VALUES(url), created_at = NOW()";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute([
+        ':task_id' => $taskId,
+        ':position' => $position,
+        ':s3_key' => $key,
+        ':url' => $url,
+    ]);
+}
+
+function remove_photo(int $photoId): void
+{
+    $pdo = get_pdo();
+    $stmt = $pdo->prepare('SELECT * FROM task_photos WHERE id = ?');
+    $stmt->execute([$photoId]);
+    $photo = $stmt->fetch();
+    if (!$photo) {
+        return;
+    }
+    try {
+        s3_client()->deleteObject([
+            'Bucket' => S3_BUCKET,
+            'Key' => $photo['s3_key'],
+        ]);
+    } catch (Throwable $e) {
+        // ignore but proceed with DB deletion
+    }
+    $pdo->prepare('DELETE FROM task_photos WHERE id = ?')->execute([$photoId]);
+}
+
+function get_filter_values(): array
+{
+    $filters = [
+        'search' => trim($_GET['search'] ?? ''),
+        'building_id' => isset($_GET['building_id']) && $_GET['building_id'] !== '' ? (int)$_GET['building_id'] : null,
+        'room_id' => isset($_GET['room_id']) && $_GET['room_id'] !== '' ? (int)$_GET['room_id'] : null,
+        'priority' => isset($_GET['priority']) ? array_filter((array)$_GET['priority'], fn($p) => $p !== '') : [],
+        'status' => $_GET['status'] ?? '',
+        'assigned_to' => trim($_GET['assigned_to'] ?? ''),
+        'created_from' => $_GET['created_from'] ?? '',
+        'created_to' => $_GET['created_to'] ?? '',
+        'due_from' => $_GET['due_from'] ?? '',
+        'due_to' => $_GET['due_to'] ?? '',
+        'has_photos' => $_GET['has_photos'] ?? '',
+    ];
+    return $filters;
+}
+
+function filter_summary(array $filters): string
+{
+    $parts = [];
+    if ($filters['search']) {
+        $parts[] = 'Search: "' . sanitize($filters['search']) . '"';
+    }
+    if ($filters['building_id']) {
+        $building = fetch_building_name($filters['building_id']);
+        if ($building) {
+            $parts[] = 'Building: ' . sanitize($building);
+        }
+    }
+    if ($filters['room_id']) {
+        $room = fetch_room_label($filters['room_id']);
+        if ($room) {
+            $parts[] = 'Room: ' . sanitize($room);
+        }
+    }
+    if ($filters['priority']) {
+        $parts[] = 'Priority: ' . implode(', ', array_map('priority_label', $filters['priority']));
+    }
+    if ($filters['status']) {
+        $parts[] = 'Status: ' . status_label($filters['status']);
+    }
+    if ($filters['assigned_to']) {
+        $parts[] = 'Assigned To: ' . sanitize($filters['assigned_to']);
+    }
+    if ($filters['created_from'] || $filters['created_to']) {
+        $parts[] = 'Created: ' . ($filters['created_from'] ?: 'any') . ' to ' . ($filters['created_to'] ?: 'any');
+    }
+    if ($filters['due_from'] || $filters['due_to']) {
+        $parts[] = 'Due: ' . ($filters['due_from'] ?: 'any') . ' to ' . ($filters['due_to'] ?: 'any');
+    }
+    if ($filters['has_photos'] !== '') {
+        $parts[] = $filters['has_photos'] === '1' ? 'Has Photos' : 'No Photos';
+    }
+    return $parts ? implode(' • ', $parts) : 'No filters applied';
+}
+
+function fetch_building_name(int $buildingId): ?string
+{
+    $stmt = get_pdo()->prepare('SELECT name FROM buildings WHERE id = ?');
+    $stmt->execute([$buildingId]);
+    $value = $stmt->fetchColumn();
+    return $value !== false ? $value : null;
+}
+
+function fetch_room_label(int $roomId): ?string
+{
+    $stmt = get_pdo()->prepare('SELECT CONCAT(room_number, IF(label IS NULL OR label = "", "", CONCAT(" - ", label))) FROM rooms WHERE id = ?');
+    $stmt->execute([$roomId]);
+    $value = $stmt->fetchColumn();
+    return $value !== false ? $value : null;
+}
+
+function validate_task_payload(array $data, array &$errors): bool
+{
+    $errors = [];
+    if (empty($data['building_id'])) {
+        $errors['building_id'] = 'Building is required';
+    }
+    if (empty($data['room_id'])) {
+        $errors['room_id'] = 'Room is required';
+    }
+    if (empty(trim($data['title'] ?? ''))) {
+        $errors['title'] = 'Title is required';
+    }
+    if (!in_array($data['priority'] ?? '', get_priorities(), true)) {
+        $errors['priority'] = 'Invalid priority';
+    }
+    if (!in_array($data['status'] ?? 'open', get_statuses(), true)) {
+        $errors['status'] = 'Invalid status';
+    }
+    if (!empty($data['due_date']) && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $data['due_date'])) {
+        $errors['due_date'] = 'Due date must be YYYY-MM-DD';
+    }
+    return empty($errors);
+}
+
+function ensure_building_room_valid(int $buildingId, int $roomId): bool
+{
+    $stmt = get_pdo()->prepare('SELECT COUNT(*) FROM rooms WHERE id = ? AND building_id = ?');
+    $stmt->execute([$roomId, $buildingId]);
+    return (bool)$stmt->fetchColumn();
+}
+
+function get_age_bucket_sql(): string
+{
+    return "CASE
+        WHEN DATEDIFF(CURDATE(), DATE(t.created_at)) <= 7 THEN '0-7'
+        WHEN DATEDIFF(CURDATE(), DATE(t.created_at)) BETWEEN 8 AND 14 THEN '8-14'
+        WHEN DATEDIFF(CURDATE(), DATE(t.created_at)) BETWEEN 15 AND 30 THEN '15-30'
+        ELSE '>30' END";
+}
+
+function analytics_counts(): array
+{
+    $pdo = get_pdo();
+    $open = $pdo->query("SELECT COUNT(*) FROM tasks WHERE status = 'open'")->fetchColumn();
+    $done30 = $pdo->query("SELECT COUNT(*) FROM tasks WHERE status = 'done' AND updated_at >= (CURDATE() - INTERVAL 30 DAY)")->fetchColumn();
+    $dueWeek = $pdo->query("SELECT COUNT(*) FROM tasks WHERE status <> 'done' AND due_date BETWEEN CURDATE() AND (CURDATE() + INTERVAL 7 DAY)")->fetchColumn();
+    $overdue = $pdo->query("SELECT COUNT(*) FROM tasks WHERE status <> 'done' AND due_date IS NOT NULL AND due_date < CURDATE()")
+        ->fetchColumn();
+    return [
+        'open' => (int)$open,
+        'done30' => (int)$done30,
+        'dueWeek' => (int)$dueWeek,
+        'overdue' => (int)$overdue,
+    ];
+}
+
+function analytics_group(string $sql): array
+{
+    $stmt = get_pdo()->query($sql);
+    return $stmt->fetchAll();
+}
+
+function export_tasks(array $filters): array
+{
+    $params = [];
+    $where = build_task_filter_query($filters, $params);
+    $sql = "SELECT t.*, b.name AS building_name, r.room_number, r.label AS room_label
+            FROM tasks t
+            JOIN buildings b ON b.id = t.building_id
+            JOIN rooms r ON r.id = t.room_id
+            $where
+            ORDER BY b.name, r.room_number, t.priority DESC, t.created_at DESC";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchAll();
+}
+
+function fetch_tasks_by_ids(array $ids): array
+{
+    if (empty($ids)) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $sql = "SELECT t.*, b.name AS building_name, r.room_number, r.label AS room_label
+            FROM tasks t
+            JOIN buildings b ON b.id = t.building_id
+            JOIN rooms r ON r.id = t.room_id
+            WHERE t.id IN ($placeholders)
+            ORDER BY t.created_at DESC";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute($ids);
+    return $stmt->fetchAll();
+}
+
+function room_tasks(int $roomId): array
+{
+    $sql = "SELECT t.*, b.name AS building_name, r.room_number, r.label AS room_label
+            FROM tasks t
+            JOIN buildings b ON b.id = t.building_id
+            JOIN rooms r ON r.id = t.room_id
+            WHERE t.room_id = :room
+            ORDER BY t.status, t.priority DESC, t.created_at DESC";
+    $stmt = get_pdo()->prepare($sql);
+    $stmt->execute([':room' => $roomId]);
+    return $stmt->fetchAll();
+}
+
+function group_tasks_by_status(array $tasks): array
+{
+    $grouped = ['open' => [], 'in_progress' => [], 'done' => []];
+    foreach ($tasks as $task) {
+        $grouped[$task['status']][] = $task;
+    }
+    return $grouped;
+}
+
+function task_photo_thumbnails(int $taskId): array
+{
+    $photos = fetch_task_photos($taskId);
+    $thumbnails = [];
+    for ($i = 1; $i <= 3; $i++) {
+        $thumbnails[$i] = $photos[$i]['url'] ?? null;
+    }
+    return $thumbnails;
+}
+
+function fetch_photos_for_tasks(array $taskIds): array
+{
+    if (empty($taskIds)) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($taskIds), '?'));
+    $stmt = get_pdo()->prepare("SELECT * FROM task_photos WHERE task_id IN ($placeholders) ORDER BY task_id, position");
+    $stmt->execute($taskIds);
+    $photos = [];
+    while ($row = $stmt->fetch()) {
+        $photos[$row['task_id']][] = $row;
+    }
+    return $photos;
+}
+
+function json_response(array $data, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: application/json');
+    echo json_encode($data);
+    exit;
+}
+

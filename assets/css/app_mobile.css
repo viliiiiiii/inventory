@@ -1,0 +1,162 @@
+/* ==========================================================================
+   NEBULA PHONE UI — phone-first, thumb-friendly, card design
+   Targets your tasks.php classes: .card, .filters, .table, .badge, .btn, etc.
+   Only loads on small screens via media attribute.
+   ========================================================================== */
+
+/* Base polish */
+:root{
+  --bg:#f7f9ff; --surface:#ffffff; --ink:#0c1426; --muted:#6b7280;
+  --stroke:#e6ebf3; --stroke-2:#dbe3f9;
+  --cyan:#10d7ff; --indigo:#6a7cff; --mint:#43ffb1;
+  --r:16px; --r-sm:12px;
+  --shadow-0:0 1px 2px rgba(12,18,34,.06);
+  --shadow-1:0 10px 24px rgba(12,18,34,.12);
+  --shadow-2:0 22px 60px rgba(12,18,34,.16);
+  --t:220ms cubic-bezier(.2,.8,.2,1);
+}
+
+body{
+  background:
+    radial-gradient(80% 38% at 15% -10%, rgba(16,215,255,.18), transparent 55%),
+    radial-gradient(75% 40% at 100% 0%, rgba(106,124,255,.16), transparent 60%),
+    var(--bg);
+  color:var(--ink);
+  font: 15.5px/1.55 Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+  margin:0;
+}
+
+/* Container: edge-to-edge with comfy padding */
+.container{
+  padding: 10px 14px 90px; /* bottom space for sticky actions */
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+/* Cards */
+.card{
+  background:var(--surface);
+  border:1px solid var(--stroke);
+  border-radius:var(--r);
+  padding:14px;
+  margin:12px 0;
+  box-shadow:var(--shadow-0);
+}
+.card-header{
+  display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:10px;
+}
+.card-header h1{ margin:0; font-weight:900; font-size:18px; }
+
+/* Buttons */
+.btn{
+  --bg:#fff; --fg:var(--ink); --bd:var(--stroke);
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  padding:12px 14px; border-radius:12px; border:1px solid var(--bd);
+  background:var(--bg); color:var(--fg); font-weight:800; font-size:14px;
+  box-shadow:var(--shadow-0);
+  transition: transform .06s, box-shadow var(--t), background var(--t), border-color var(--t);
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active{ transform: scale(.98); }
+.btn.primary{
+  --bg: linear-gradient(135deg, var(--cyan), var(--indigo)); --fg:#001018; --bd:transparent;
+  border-color: rgba(16,215,255,.45);
+}
+.btn.small{ padding:10px 12px; font-size:13px; }
+
+/* Filters: stacked, thumb-sized */
+.filters{
+  display:grid; gap:12px;
+}
+.filters label{ font-weight:800; color:#64748b; font-size:13px; }
+.filters input, .filters select{
+  width:100%; font:inherit; color:var(--ink);
+  background:#fff; border:1px solid var(--stroke); border-radius:12px;
+  padding:12px 12px;
+}
+.filter-actions{ display:flex; gap:10px; flex-wrap:wrap; }
+
+/* Table → Card rows */
+.table{
+  border:0; background:transparent;
+}
+.table table{ border-collapse: collapse; width:100%; }
+.table thead{ display:none; }
+
+.table tbody{ display:grid; gap:12px; }
+.table tr{
+  display:grid; gap:10px; padding:14px;
+  background:var(--surface); border:1px solid var(--stroke); border-radius:16px;
+  box-shadow:var(--shadow-0);
+}
+.table td{
+  display:grid; grid-template-columns: 42% 1fr; gap:8px; align-items:center;
+  padding:0; border:0;
+}
+.table td::before{
+  content: attr(data-label);
+  color:#64748b; font-weight:800; font-size:13px;
+}
+
+/* Specific columns: larger tap targets */
+.col-check input[type="checkbox"]{ width:22px; height:22px; }
+
+/* Badges */
+.badge{
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 10px; border-radius:999px; border:1px solid var(--stroke-2);
+  background:linear-gradient(135deg, rgba(16,215,255,.14), rgba(106,124,255,.10));
+  color:#07242a; font-weight:900; font-size:12px;
+}
+.badge .dot{ width:8px; height:8px; border-radius:999px; background:currentColor; display:inline-block; }
+/* Priority */
+.badge.priority-urgent, .badge.-urgent{ background:#fff1f3; color:#9f1239; border-color:#fecdd3; }
+.badge.priority-high,   .badge.-high  { background:#fff8e7; color:#a16207; border-color:#fde68a; }
+.badge.priority-medium, .badge.-med   { background:#e7fbff; color:#075985; border-color:#bae6fd; }
+.badge.priority-low,    .badge.-low   { background:#ecfdf5; color:#065f46; border-color:#a7f3d0; }
+/* Status */
+.badge.status-open, .badge.-open      { background:#e7f3ff; color:#0b4ea2; border-color:#cfe3ff; }
+.badge.status-inprogress, .badge.-wip { background:#eff6ff; color:#1e40af; border-color:#dbeafe; }
+.badge.status-done, .badge.-done      { background:#ecfdf5; color:#065f46; border-color:#a7f3d0; }
+.badge.status-closed, .badge.-closed  { background:#f3f4f6; color:#111827; border-color:#e5e7eb; }
+
+/* Bulk actions: sticky bottom bar */
+.bulk-actions{
+  position:fixed; left:0; right:0; bottom:0; z-index:50;
+  background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.96));
+  backdrop-filter: blur(6px);
+  border-top:1px solid var(--stroke);
+  display:flex; gap:10px; padding:10px; justify-content:space-between;
+}
+
+/* Pagination */
+.pagination{ display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin:12px 0 80px; }
+.pagination .btn{ padding:10px 12px; }
+
+/* Photo modal (full-screen feel) */
+.photo-modal.hidden{ display:none; }
+.photo-modal{ position:fixed; inset:0; z-index:9999; }
+.photo-modal-backdrop{
+  position:absolute; inset:0; background:rgba(10,16,28,.6); backdrop-filter: blur(4px);
+}
+.photo-modal-box{
+  position:relative; z-index:1; margin: 8vh 12px 0; width:auto;
+  border-radius:16px; background:#fff; border:1px solid var(--stroke); box-shadow:var(--shadow-2);
+  max-height: 84vh; overflow:hidden;
+}
+.photo-modal-header{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:10px 12px; border-bottom:1px solid var(--stroke);
+}
+.photo-modal-header h3{ margin:0; font-size:16px; font-weight:900; }
+.close-btn{
+  all:unset; width:36px; height:36px; display:grid; place-items:center;
+  border-radius:10px; border:1px solid var(--stroke); background:#fff; font-size:20px;
+}
+.photo-modal-body{
+  padding:10px; background:#fff; overflow:auto;
+  display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px;
+}
+.photo-modal-body img{
+  width:100%; height:150px; object-fit:cover; border-radius:12px; border:1px solid var(--stroke);
+}
