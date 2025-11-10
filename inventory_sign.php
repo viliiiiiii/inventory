@@ -94,6 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$errors && $movement) {
                 $errors[] = 'Provide the sector name for ' . strtolower($config['label']) . '.';
                 continue;
             }
+            $sectorName = inventory_str_truncate($sectorName, 80);
         } elseif ($sectorChoice === 'null') {
             $sectorName = 'Unassigned';
         } else {
@@ -103,6 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$errors && $movement) {
                 $errors[] = 'Unknown sector selected for ' . strtolower($config['label']) . '.';
                 continue;
             }
+            $sectorName = inventory_str_truncate($sectorName, 80);
         }
 
         $parts = explode(',', $signatureData, 2);
@@ -133,10 +135,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$errors && $movement) {
                 'sector_id'    => $sectorId,
                 'sector_name'  => $sectorName,
                 'sector_choice'=> $sectorChoice,
-                'signer'       => trim((string)($_POST[$config['signer_field']] ?? '')),
+                'signer'       => inventory_str_truncate(trim((string)($_POST[$config['signer_field']] ?? '')), 80),
                 'signed_at'    => date('c'),
             ];
-            $label = json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $label = inventory_format_signature_label($metadata);
             inventory_store_movement_file(
                 $appsPdo,
                 (int)$tokenRow['movement_id'],
@@ -158,6 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$errors && $movement) {
             if ($label === '') {
                 $label = 'Signed paperwork upload';
             }
+            $label = inventory_str_truncate($label, 120);
             inventory_store_movement_file($appsPdo, (int)$tokenRow['movement_id'], $upload, $label, 'signature', $userId);
             $savedSomething = true;
         } catch (Throwable $e) {

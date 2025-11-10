@@ -6,6 +6,32 @@ require_once __DIR__ . '/helpers.php';
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
+function inventory_str_length(string $value): int
+{
+    return function_exists('mb_strlen') ? mb_strlen($value) : strlen($value);
+}
+
+function inventory_str_truncate(string $value, int $length): string
+{
+    if ($length <= 0) {
+        return '';
+    }
+
+    if (function_exists('mb_substr')) {
+        if (mb_strlen($value) <= $length) {
+            return $value;
+        }
+
+        return mb_substr($value, 0, $length);
+    }
+
+    if (strlen($value) <= $length) {
+        return $value;
+    }
+
+    return substr($value, 0, $length);
+}
+
 /**
  * Upload arbitrary binary/text data to the configured S3/MinIO bucket.
  *
@@ -277,6 +303,10 @@ function inventory_generate_transfer_pdf(PDO $pdo, array $movements, array $line
 
 function inventory_store_movement_file(PDO $pdo, int $movementId, array $upload, ?string $label, string $kind, ?int $userId): void
 {
+    if (is_string($label) && inventory_str_length($label) > 120) {
+        $label = inventory_str_truncate($label, 120);
+    }
+
     $pdo->prepare('INSERT INTO inventory_movement_files (movement_id, file_key, file_url, mime, label, kind, uploaded_by) VALUES (:mid,:key,:url,:mime,:label,:kind,:uid)')
         ->execute([
             ':mid'   => $movementId,
@@ -287,6 +317,73 @@ function inventory_store_movement_file(PDO $pdo, int $movementId, array $upload,
             ':kind'  => $kind,
             ':uid'   => $userId,
         ]);
+}
+
+/**
+ * Compact signature metadata into a label string that fits the database column.
+ */
+function inventory_format_signature_label(array $metadata): string
+{
+    $role = (string)($metadata['role'] ?? '');
+    $sectorName = trim((string)($metadata['sector_name'] ?? ''));
+    $signer = trim((string)($metadata['signer'] ?? ''));
+    $sectorChoice = (string)($metadata['sector_choice'] ?? '');
+    $signedAt = (string)($metadata['signed_at'] ?? date('c'));
+
+    if ($sectorName !== '') {
+        $sectorName = inventory_str_truncate($sectorName, 48);
+    }
+    if ($signer !== '') {
+        $signer = inventory_str_truncate($signer, 48);
+    }
+    if ($sectorChoice !== '') {
+        $sectorChoice = inventory_str_truncate($sectorChoice, 24);
+    }
+
+    $payload = [
+        'r'   => $role,
+        'sid' => array_key_exists('sector_id', $metadata) ? $metadata['sector_id'] : null,
+    ];
+
+    if ($sectorChoice !== '') {
+        $payload['sc'] = $sectorChoice;
+    }
+    if ($sectorName !== '') {
+        $payload['sn'] = $sectorName;
+    }
+    if ($signer !== '') {
+        $payload['sg'] = $signer;
+    }
+    if ($signedAt !== '') {
+        $payload['ts'] = substr($signedAt, 0, 25);
+    }
+
+    $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($encoded)) {
+        $encoded = '';
+    }
+
+    if (inventory_str_length($encoded) > 118) {
+        if (isset($payload['sn'])) {
+            $payload['sn'] = inventory_str_truncate((string)$payload['sn'], 32);
+        }
+        if (isset($payload['sg'])) {
+            $payload['sg'] = inventory_str_truncate((string)$payload['sg'], 32);
+        }
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
+    }
+
+    if ($encoded === '' || inventory_str_length($encoded) > 118) {
+        $roleLabel = $role === 'target' ? 'Receiving' : 'Source';
+        $fallback = $signer !== '' ? $signer : ($sectorName !== '' ? $sectorName : 'Signature');
+        $encoded = 'Signature - ' . $roleLabel . ' - ' . inventory_str_truncate($fallback, 80);
+    }
+
+    if (inventory_str_length($encoded) > 120) {
+        $encoded = inventory_str_truncate($encoded, 120);
+    }
+
+    return $encoded;
 }
 
 function inventory_fetch_movements(PDO $pdo, array $itemIds): array
@@ -334,11 +431,34 @@ function inventory_decode_signature_label(?string $label): ?array
     }
 
     $decoded = json_decode($label, true);
-    if (is_array($decoded) && isset($decoded['role'])) {
-        return $decoded;
+    if (is_array($decoded)) {
+        if (isset($decoded['r'])) {
+            $role = (string)$decoded['r'];
+            if ($role === 'receiving') {
+                $role = 'target';
+            }
+
+            $sectorId = null;
+            if (array_key_exists('sid', $decoded) && $decoded['sid'] !== null && $decoded['sid'] !== '') {
+                $sectorId = (int)$decoded['sid'];
+            }
+
+            return [
+                'role'         => $role,
+                'sector_id'    => $sectorId,
+                'sector_choice'=> $decoded['sc'] ?? null,
+                'sector_name'  => $decoded['sn'] ?? '',
+                'signer'       => $decoded['sg'] ?? '',
+                'signed_at'    => $decoded['ts'] ?? null,
+            ];
+        }
+
+        if (isset($decoded['role'])) {
+            return $decoded;
+        }
     }
 
-    if (preg_match('/^(?:Digital signature|Uploaded copy) - (Source|Receiving) - (.+)$/', $label, $m)) {
+    if (preg_match('/^(?:Digital signature|Uploaded copy|Signature) - (Source|Receiving) - (.+)$/', $label, $m)) {
         return [
             'role'        => strtolower($m[1]) === 'receiving' ? 'target' : 'source',
             'sector_name' => '',
